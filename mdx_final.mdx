@@ -1,0 +1,423 @@
+﻿
+--1. List product have Sum(Quantity) >= 100 and Sum(Revenue_product) >= 50 000 in Quarter 3
+
+SELECT 
+    {[Measures].[Sum Quantity], [Measures].[Sum Revenue Product]} ON COLUMNS,
+    FILTER(
+        [DIM Product].[Id Product].[Id Product] * 
+		[DIM Product].[Product Category].[Product Category] * 
+		[DIM Product].[Product SKU].[Product SKU],
+        [Measures].[Sum Quantity] >= 100 
+        AND [Measures].[Sum Revenue Product] >= 50000
+        AND [DIM Date].[Quarter].&[Quarter 3]&[2019]
+    ) ON ROWS
+FROM [SSAS_Project_Final];
+
+--
+
+
+
+
+--2. LIST INFORMATION top 20 PRODUCT HAVE SUM( DELIVERIES CHARGES ) IS MAX 
+SELECT 
+    [Measures].[Sum Delivery Charges] ON COLUMNS,
+    {
+        TOPCOUNT(
+            ORDER(
+                [DIM Product].[Product SKU].CHILDREN *
+                [DIM Product].[Id Product].CHILDREN *
+                [DIM Product].[Product Category].CHILDREN,
+                [Measures].[Sum Delivery Charges],
+                DESC
+            ),
+            20,
+            [Measures].[Sum Quantity]
+        )
+    } ON ROWS
+FROM [SSAS_Project_Final];
+
+
+
+--3. List product have use Coupon Status "Used" and count number used this coupon >= 100 
+
+WITH SET FilteredProducts AS
+    FILTER(
+        [DIM Product].[Id Product].[Id Product].MEMBERS,
+        (
+            NOT ISEMPTY(
+                INTERSECT(
+                    {[Dim Coupon].[Coupon Status].&[Used]},
+                    [DIM Product].[Id Product].CURRENTMEMBER.PROPERTIES("Coupon Status")
+                )
+            )
+            AND
+            [Measures].[Count Fact] >= 100
+        )
+    )
+
+SELECT 
+    [Measures].[Count Fact] ON COLUMNS,
+    NON EMPTY 
+    {
+        FilteredProducts *
+        [DIM Product].[Product Category].[Product Category].MEMBERS *
+        [DIM Product].[Product Description].[Product Description].MEMBERS *
+        [DIM Product].[Product SKU].[Product SKU].MEMBERS
+    } ON ROWS
+FROM [SSAS_Project_Final];
+
+-- Lấy ra tất cả các loại sản phẩm bán được trong quý 1 và quý 2 sau đó tổng hợp để xuất ra thông tin các sản phẩm nào không bán được trong 2 quý này
+-- Lấy ra tất cả các sp bán ra của q1 và của q2 --> Union 2 tập q1 và q2 -->  Lấy tập tất cả các sản phẩm của năm --> All except q1&q2 --> Kq
+WITH 
+SET [Q1_Category] AS
+    NONEMPTY(
+        [DIM Product].[Product Category].MEMBERS,
+        ([Measures].[Sum Quantity], [DIM Date].[Quarter].&[Quarter 1]&[2019])
+    )
+
+set [All_Category] as
+NonEmpty(
+	[DIM Product].[Product Category].MEMBERS,
+	[Measures].[Sum Quantity]
+)
+
+set [no_revenue_category] as
+except(
+	[All_Category],
+	[Q1_Category]
+)
+SELECT 
+    [Measures].[Sum Quantity] ON COLUMNS,
+    [no_revenue_category] ON ROWS
+FROM [SSAS_Project_Final];
+
+
+-- 4. THỐNG KÊ SỐ LẦN MUA HÀNG VÀ DOANH SỐ SẢN PHẨM CỦA TOP 20 GIAO DỊCH 
+--CÓ TRỊ GIÁ HÓA ĐƠN CAO NHẤT CỬA HÀNG PHÂN LOẠI THEO GIỚI TÍNH KHÁCH HÀNG 
+WITH 
+SET Top20Transactions AS
+    ORDER(
+        [Dim Transaction].[Transaction ID],
+        [Measures].[Sum Revenue Bill],
+        DESC
+    ).ITEM(0) : 
+    ORDER(
+        [Dim Transaction].[Transaction ID],
+        [Measures].[Sum Revenue Bill],
+        DESC
+    ).ITEM(19)
+
+SELECT
+    {[Measures].[Count Fact],
+	[Measures].[Sum Revenue Product]} ON COLUMNS,
+    NON EMPTY
+    CROSSJOIN(
+        Top20Transactions,
+        {[Dim Customer].[Gender].&[F], [Dim Customer].[Gender].&[M]}
+    ) ON ROWS
+FROM [SSAS_Project_Final];
+
+
+--5. Thống kê doanh thu cửa hàng với các hóa đơn đã áp dụng các mã giảm giá
+-- được sắp xếp từ cao đến thấp theo danh mục loại sản phẩm
+
+CREATE MEMBER CURRENTCUBE.[Measures].[Sum Revenue Bill_Coupon Used] AS
+    SUM(
+        FILTER(
+            [Dim Coupon].[Coupon Status].MEMBERS,
+            [Dim Coupon].[Coupon Status].CURRENTMEMBER IS [Dim Coupon].[Coupon Status].&[Used]
+        ),
+        [Measures].[Sum Revenue Product]
+    );
+--> 
+
+
+
+SELECT
+    NON EMPTY
+    FILTER(
+        ORDER(
+            [DIM Product].[Product Category].[Product Category].MEMBERS,
+            [Measures].[Sum Revenue Bill_Coupon Used], 
+            DESC
+        ),
+        [Measures].[Sum Revenue Bill_Coupon Used] > 0 
+    ) ON ROWS,
+    {[Measures].[Sum Revenue Product], [Measures].[Sum Revenue Bill_Coupon Used]} ON COLUMNS
+FROM [SSAS_Project_Final];
+
+
+-- 6. Liệt kê thông tin tất cả các khách hàng có đóng góp danh thu trên 50 000 cho cửa hàng
+
+
+
+SELECT
+  [Measures].[Sum Revenue Bill_Coupon Used] ON COLUMNS,
+  NON EMPTY
+  FILTER(
+    ORDER(
+      CROSSJOIN(
+        [Dim Customer].[Customer ID].[Customer ID].MEMBERS,
+        [Dim Customer].[Gender].[Gender].MEMBERS,
+        [Dim Location].[Location].[Location].MEMBERS
+      ),
+      [Measures].[Sum Revenue Bill_Coupon Used],
+      DESC
+    ),
+    [Measures].[Sum Revenue Bill_Coupon Used] >= 10000
+  ) ON ROWS
+FROM [SSAS_Project_Final];
+
+
+
+-- 7. Liệt kê top 20 khách hàng mua hàng nhiều nhất trong năm theo quý 
+--kèm theo danh mục vị trí nhà ở khách hàng 
+
+
+
+WITH
+SET [Top 20 Customers_Revenue bill] AS
+    TopCount(
+        [Dim Customer].[Customer ID].[Customer ID].MEMBERS,
+        20,
+        [Measures].[Revenue_Bill_Real]
+    )
+
+SELECT 
+    NON EMPTY [Measures].[Revenue_Bill_Real] ON COLUMNS,
+    NON EMPTY[Dim Date].[Quarter].[Quarter].MEMBERS 
+	* [Dim Location].[Location].[Location].MEMBERS 
+	* [Top 20 Customers_Revenue bill] ON ROWS
+FROM [SSAS_Project_Final];
+
+-- 8. Với mỗi tháng thống kê top 5 giao dịch có doanh thu cao nhất (khó)
+WITH
+SET Top5TransactionsByMonth AS
+    Generate(
+        [DIM Date].[Month].CHILDREN,
+        TOPCOUNT(
+            [DIM Date].[Month].CURRENTMEMBER * [Dim Transaction].[Transaction ID].[Transaction ID].MEMBERS,
+            5,
+            [Measures].[Revenue_Bill_Real]
+        )
+    )
+
+SELECT 
+    NON EMPTY [Top5TransactionsByMonth] ON ROWS,
+    NON EMPTY [Measures].[Revenue_Bill_Real] ON COLUMNS
+FROM [SSAS_Project_Final];
+
+
+
+--9. Với mỗi loại sản phẩm, truy vấn ra top 5 các khách hàng kèm theo vị trí nhà ở và giới tính, những người đã mua nhiều sản phẩm nhất 
+
+WITH
+SET Top5CustomersByCategory AS
+    
+        GENERATE(
+            [DIM Product].[Product Category].[ALL].CHILDREN ,
+            TOPCOUNT(
+                NONEMPTY(
+                    [DIM Product].[Category].CURRENTMEMBER *
+                    [Dim Customer].[Customer ID].[Customer ID].MEMBERS *
+                    [Dim Customer].[Gender].[Gender].MEMBERS *
+                    [Dim Location].[Location].[Location].MEMBERS,
+                    [Measures].[Sum Quantity]
+                ),
+                5,
+                [Measures].[Sum Quantity]
+            )
+        )
+    
+
+SELECT 
+    NON EMPTY [DIM Product].[Product Category]ON COLUMNS,
+    NON EMPTY Top5CustomersByCategory ON ROWS
+FROM [SSAS_Project_Final];
+
+
+
+
+
+
+-- 10. Liệt kê loại sản phẩm có phí vận chuyển cao nhất nhưng vẫn chiếm Revenue_Product cao thuộc Top10 của năm 
+
+
+
+WITH
+SET [Top10RevenueProducts] AS
+    TOPCOUNT(
+        [Dim Product].[Product Category].[Product Category].MEMBERS,
+        10,
+        [Measures].[Sum Revenue Product]
+    )
+
+SET [TopShippingFeeProducts] AS
+    TOPCOUNT(
+        [Top10RevenueProducts],
+        2,
+        [Measures].[Sum Delivery Charges]
+    )
+
+SELECT 
+    NON EMPTY {[Measures].[Sum Revenue Product], [Measures].[Sum Delivery Charges]} ON COLUMNS,
+    NON EMPTY [TopShippingFeeProducts] ON ROWS
+FROM [SSAS_Project_Final]
+WHERE (
+    [Dim Date].[Year].&[2019] 
+);
+
+
+-- 11. Với mỗi thứ trong tuần của các tháng theo quý 1, tính ra số lần mua hàng CountFact của thứ đó --dễ 
+
+SELECT 
+    NON EMPTY {[Measures].[Count Fact]} ON COLUMNS,
+    NON EMPTY 
+    ORDER(
+        [DIM Date].[Day Of Week].Members,
+        [Measures].[Count Fact],
+        DESC
+    ) ON ROWS
+FROM [SSAS_Project_Final]
+WHERE (
+    [DIM Date].[Quarter].&[Quarter 1]&[2019]
+);
+
+
+--12. Với mỗi khách hàng, in ra chi phí cho từng tháng so với tổng chi phí 
+WITH
+  MEMBER [Measures].[Max Revenue Bill] AS
+    Max(
+      [DIM Date].[Month].Members,
+      [Measures].[Sum Revenue Bill]
+    )
+
+SELECT
+  NON EMPTY
+  {
+    [Measures].[Sum Revenue Bill],
+    [Measures].[Max Revenue Bill]
+  } ON COLUMNS,
+  NON EMPTY
+  {
+    [DIM Customer].[Customer ID].Members *
+    [DIM Date].[Month].Members
+  } ON ROWS
+FROM [SSAS_Project_Final];
+
+
+
+
+
+--13. Thống kê danh mục các Location có số lượng khách hàng mua hàng thuộc top 20 khách hàng có đóng góp danh thu cao nhất cho cửa hàng 
+-- REPORT THE LIST CUSTOMER WITH LOCATION HAVE SUM(REVENUE_BILL) IN TOP 10 CUSTOMER MAX  --dễ
+WITH 
+SET [Top20Customers] AS
+    TOPCOUNT(
+        [Dim Customer].[Customer ID].[Customer ID].MEMBERS,
+        20,
+        [Measures].[Revenue_Bill_Real]
+    )
+
+SET [Top20CustomersWithLocation] AS
+    NONEMPTY(
+        [Top20Customers] * [Dim Location].[Location].[Location].MEMBERS,
+        [Measures].[Revenue_Bill_Real]
+    )
+
+SELECT 
+    [Measures].[Revenue_Bill_Real] ON COLUMNS,
+    NON EMPTY [Top20CustomersWithLocation] ON ROWS
+FROM [SSAS_Project_Final];
+
+--14. Thống kê ngày của từng tháng có số lượng giao dịch mua hàng là nhiều nhất 
+
+WITH
+MEMBER [Measures].[Max Count Transactions] AS
+    Max(
+        [Dim Date].[Day].CurrentMember,
+        [Measures].[Count Fact]
+    )
+
+SET [Max Day by Month] AS
+    Generate(
+        ORDER(
+            [Dim Date].[Month].MEMBERS,
+            [Dim Date].[Month].CurrentMember.MEMBER_VALUE,
+            DESC
+        ),
+        TopCount(
+            [Dim Date].[Month].CurrentMember * [Dim Date].[Day].[Day].MEMBERS,
+            1,
+            [Measures].[Max Count Transactions]
+        )
+    )
+SELECT [Measures].[Count Fact] ON COLUMNS,
+[Max Day by Month] ON ROWS
+FROM [SSAS_Project_Final];
+
+--15. Thống kê các khách hàng ở "New York & California" với số lượng sản phẩm đã được mua trong quý 4 CỦA CÁC KHÁCH HÀNG đó 
+SELECT 
+    NON EMPTY {
+        [Dim Location].[Location].&[New York],
+        [Dim Location].[Location].&[California]
+    } ON ROWS,
+    NON EMPTY ORDER(
+        [Dim Customer].[Customer ID].[Customer ID].MEMBERS,
+        [Measures].[Sum Quantity], BDESC
+    ) ON COLUMNS
+FROM (
+    SELECT 
+        {[Dim Location].[Location].&[New York], [Dim Location].[Location].&[California]} * 
+        [Dim Customer].[Customer ID].[Customer ID].MEMBERS ON 0,
+        {[Measures].[Sum Quantity]} ON 1
+    FROM [SSAS_Project_Final]
+    WHERE (
+        [Dim Date].[Quarter].&[Q4]
+    )
+);
+
+--16. Với mỗi loại sản phẩm, truy vấn ra top 5 các khách hàng kèm theo vị trí nhà ở và giới tính, những người đã mua nhiều sản phẩm nhất có sử dụng Coupon Status = "Used"
+
+SELECT
+  NON EMPTY
+  {
+    [Measures].[Sum Quantity]
+  } ON COLUMNS,
+  NON EMPTY
+  {
+    [DIM Customer].[Customer ID].[Customer ID].Members *
+	[DIM Location].[Location].[Location].Members
+  } ON ROWS
+FROM [SSAS_Project_Final]
+WHERE
+    [DIM Coupon].[Coupon Status].&[Used];
+
+-- THEO TỪNG THÁNG LẤY RA TRANSACTIONID CÓ OFFLINE SPEND LÀ MAX
+WITH
+MEMBER [Measures].[Max OfflineSpend] AS
+    Max(
+        [Dim Date].[Month].CurrentMember,
+        [Measures].[Sum Offline Spend]
+    )
+
+SET [Max Month by Year] AS
+    NonEmpty(
+        Generate(
+            [Dim Date].[Month].MEMBERS,
+            TopCount(
+                {[Dim Date].[Month].CurrentMember},
+                1,
+                [Measures].[Max OfflineSpend]
+            )
+        ),
+        [Measures].[Max OfflineSpend]
+    )
+
+SELECT 
+    [Measures].[Sum Offline Spend] ON ROWS,
+    NON EMPTY
+    [DIM Transaction].[Transaction ID].[Transaction ID]*
+    [Max Month by Year] ON COLUMNS
+FROM 
+    [SSAS_Project_Final]
